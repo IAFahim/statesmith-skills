@@ -5,7 +5,7 @@ description: puml gen rule
 # StateSmith PlantUML Skill (C#)
 
 ## Purpose
-Generate PlantUML state machines that compile to clean C# via StateSmith for any C# target (.NET, Unity, console, services).
+Generate PlantUML state machines that compile to clean C# via StateSmith for Unity ECS/DOTS. The output is always a `partial struct` (ECS-compatible) unless you explicitly ask for a class.
 
 ## Core Architecture
 
@@ -13,9 +13,10 @@ Generate PlantUML state machines that compile to clean C# via StateSmith for any
 - Defines states, transitions, event names
 - Calls methods: `Idle --> Active : START / OnStart();`
 
-**C# Partial Class = All Logic**
+**C# Partial Struct = All Logic**
 - Implements every method called from PlantUML
-- Handles data structures, calculations, I/O, business rules
+- Handles data, calculations, and business rules
+- Always `partial struct` + `[Serializable]` (ECS default)
 - File: `MySm.partial.cs`
 
 ## Required Configuration
@@ -35,9 +36,13 @@ UsePartialClass = true
 ```
 
 **Options:**
-- `NameSpace` - Your namespace (no trailing `;`)
-- `Usings` - Namespaces for your partial class
-- `UsePartialClass` - Always true
+| Option | Example | Notes |
+|--------|---------|-------|
+| `NameSpace` | `"MyApp.Core"` | No trailing `;` |
+| `Usings` | `"""using System;\nusing System.IO;"""` | Injected into generated file |
+| `UsePartialClass` | `true` | Always true |
+| `BaseList` | `"IDisposable"` | Interfaces/base classes the generated class implements |
+| `ClassCode` | `"""public event Action Completed;"""` | Extra declarations injected into the generated class body |
 
 ## PlantUML Syntax
 
@@ -60,222 +65,295 @@ Format: `Source --> Target : TRIGGER / Action();`
 ### Guards (optional)
 Format: `Source --> Target : EVENT [flag] / Action();`
 - Single variable only: `[isReady]`, `[hasData]`
-- No expressions or method calls
+- No expressions or method calls in guards
 
 ### Special Nodes
 - Initial: `[*] --> State`
 - History: `[H]`
 - Choice: `state "c" as c <<choice>>`
-- Entry: `State : enter / OnEnter();`
+- Entry/Exit: `State : enter / OnEnter();` / `State : exit / OnExit();`
 
-## C# Implementation
+## C# Partial Struct Shape
 
-**Partial class:**
 ```csharp
 namespace MyApp {
 using System;
-using System.Collections.Generic;
 
-public partial class MySm {
-    // ONLY data fields and action methods here.
-    // EventId enum and DispatchEvent are already in the generated .cs
-    private Dictionary<string, float> _data;
+[Serializable]
+public partial struct MySm {
+    // Fields and action methods ONLY.
+    // EventId enum, DispatchEvent, Start, and stateId are already in the generated .cs.
     private int _count;
-    
-    public void OnStart() {
-        Console.WriteLine("Starting");
-        _data = new Dictionary<string, float>();
-    }
-    
-    public void Process() {
-        foreach(var item in _data) {
-            // Process
-        }
-    }
+
+    public void OnStart() { ... }
+    public void OnProcess() { ... }
 }}
 ```
 
-> **Note:** `EventId` and `DispatchEvent()` are generated automatically. Do NOT redefine them.
+> **Never redefine** `EventId`, `DispatchEvent()`, `Start()`, or `stateId` — they are generated automatically.
+>
+> **Class instead of struct:** only use `partial class` if you explicitly need reference semantics and are not targeting ECS.
 
-## Complete Example
+---
 
-**DataProcessor.puml:**
+## Examples
+
+### 1. Flat State Machine
+
+The simplest pattern: a linear sequence of states driven by external events.
+
+**Counter.puml**
 ```plantuml
-@startuml DataProcessor
+@startuml Counter
 /'! $CONFIG : toml
 SmRunnerSettings.transpilerId = "CSharp"
 [RenderConfig.CSharp]
-NameSpace = "MyApp.Processing"
+NameSpace = "MyApp"
 Usings = """
 using System;
-using System.Collections.Generic;
 """
 UsePartialClass = true
 '/
 
 [*] --> Idle
 
-Idle --> Reading : START / BeginRead();
-Reading --> Processing : READ_COMPLETE / BeginProcess();
-Processing --> Writing : PROCESS_COMPLETE / BeginWrite();
-Writing --> Complete : WRITE_COMPLETE / Finish();
-
-Complete --> Idle : RESET / Reset();
+Idle --> Counting : START / OnStart();
+Counting --> Idle : RESET / OnReset();
+Counting --> Done : LIMIT_REACHED / OnDone();
 
 @enduml
 ```
 
-**DataProcessorSm.partial.cs:**
+**Counter.partial.cs**
 ```csharp
-namespace MyApp.Processing {
+namespace MyApp {
 using System;
-using System.Collections.Generic;
 
-public partial class DataProcessor {
-    // NO EventId enum — already generated in DataProcessor.cs
-    // NO DispatchEvent — already generated in DataProcessor.cs
-    
-    private Dictionary<string, float> _inputData;
-    private Dictionary<string, float> _outputData;
-    private float _total;
-    
-    public void BeginRead() {
-        _inputData = new Dictionary<string, float> {
-            {"Item1", 10f},
-            {"Item2", 15f},
-            {"Item3", 12f}
-        };
-        Console.WriteLine($"Reading {_inputData.Count} items");
-        // Caller dispatches READ_COMPLETE externally
+[Serializable]
+public partial struct Counter {
+    private int _count;
+    private int _limit;
+
+    public void OnStart() {
+        _count = 0;
+        _limit = 10;
     }
-    
-    public void BeginProcess() {
-        _outputData = new Dictionary<string, float>();
-        _total = 0f;
-        
-        foreach(var kvp in _inputData) {
-            float processed = ProcessValue(kvp.Value);
-            _outputData[kvp.Key] = processed;
-            _total += processed;
-        }
-        Console.WriteLine($"Processed total: {_total}");
-        // Caller dispatches PROCESS_COMPLETE externally
+
+    public void OnReset() {
+        _count = 0;
     }
-    
-    public void BeginWrite() {
-        Console.WriteLine("Writing results");
-        // Caller dispatches WRITE_COMPLETE externally
+
+    public void OnDone() {
+        Console.WriteLine($"Reached limit: {_count}");
     }
-    
-    public void Finish() {
-        Console.WriteLine("Processing complete");
+
+    // Called from your game loop / system; dispatches LIMIT_REACHED when needed
+    public void Increment() {
+        _count++;
+        if (_count >= _limit)
+            DispatchEvent(EventId.LIMIT_REACHED);
     }
-    
-    public void Reset() {
-        _inputData?.Clear();
-        _outputData?.Clear();
-        _total = 0f;
-    }
-    
-    private float ProcessValue(float input) {
-        return input * 1.5f;
-    }
-}
+}}
 ```
 
-## Reference
+---
 
-### RenderConfig.CSharp
-| Option | Example |
-|--------|---------|
-| NameSpace | `"MyApp.Core"` |
-| Usings | `"""using System;\nusing System.IO;"""` |
-| BaseList | `"IDisposable"` |
-| ClassCode | `"""public event Action Completed;"""` |
-| UsePartialClass | `true` |
+### 2. Hierarchical States
 
-### State Patterns
-- **Simple:** `A --> B : EVENT / Action();`
-- **Hierarchical:** `state Parent { [*] --> Child }`
-- **Choice:** `state c <<choice>>` then `c --> A : [cond]`
-- **History:** `[H] --> DefaultState`
+Child states inherit transitions from their parent. Useful for shared error handling or shared cancel behaviour.
 
-## Rules
+**Download.puml**
+```plantuml
+@startuml Download
+/'! $CONFIG : toml
+SmRunnerSettings.transpilerId = "CSharp"
+[RenderConfig.CSharp]
+NameSpace = "MyApp"
+Usings = """
+using System;
+"""
+UsePartialClass = true
+'/
 
-1. PlantUML actions are method calls only: `DoWork();`
-2. No square brackets in actions: move `dict[key]` to C# method
-3. Guards are single variables: `[ready]` not `[x > 5]`
-4. All business logic lives in partial class methods
+[*] --> Idle
+
+state Working {
+    [*] --> Connecting
+    Connecting --> Transferring : CONNECTED / OnConnected();
+    Transferring --> Verifying   : DATA_DONE  / OnVerify();
+    Verifying    --> [*]         : VERIFIED
+}
+
+Idle    --> Working : START  / OnStart();
+Working --> Done    : [*]    / OnDone();
+Working --> Failed  : ERROR  / OnError();   /' applies to every child state '/
+
+Done  --> Idle : RESET / OnReset();
+Failed --> Idle : RESET / OnReset();
+
+@enduml
+```
+
+**Download.partial.cs**
+```csharp
+namespace MyApp {
+using System; // for Serializable
+
+[Serializable]
+public partial struct Download {
+    private string _url;
+    private byte[] _data;
+
+    public void OnStart()     { Console.WriteLine($"Connecting to {_url}"); }
+    public void OnConnected() { Console.WriteLine("Transferring..."); }
+    public void OnVerify()    { Console.WriteLine("Verifying checksum"); }
+    public void OnDone()      { Console.WriteLine("Download complete"); }
+    public void OnError()     { Console.WriteLine("Download failed"); }
+    public void OnReset()     { _data = null; }
+}}
+```
+
+---
+
+### 3. Choice Node
+
+Use a choice pseudo-state when a transition branches on data that can only be evaluated at runtime.
+
+**Validator.puml**
+```plantuml
+@startuml Validator
+/'! $CONFIG : toml
+SmRunnerSettings.transpilerId = "CSharp"
+[RenderConfig.CSharp]
+NameSpace = "MyApp"
+Usings = """
+using System;
+"""
+UsePartialClass = true
+'/
+
+[*] --> Idle
+
+state "check" as check <<choice>>
+
+Idle  --> check  : VALIDATE / RunCheck();
+check --> Valid   : [isValid]
+check --> Invalid : [!isValid]
+
+Valid   --> Idle : RESET
+Invalid --> Idle : RESET / OnInvalidReset();
+
+@enduml
+```
+
+**Validator.partial.cs**
+```csharp
+namespace MyApp {
+using System;
+
+[Serializable]
+public partial struct Validator {
+    private bool isValid;   // guard variable read directly by the state machine
+    private string _input;
+
+    public void RunCheck() {
+        isValid = !string.IsNullOrWhiteSpace(_input) && _input.Length >= 3;
+    }
+
+    public void OnInvalidReset() {
+        Console.WriteLine("Cleared invalid input");
+        _input = null;
+    }
+}}
+```
+
+> **Guard variable naming:** the variable name in the partial class must exactly match the identifier inside `[brackets]` in the PlantUML.
+
+---
+
+## Struct Conversion (ECS/DOTS) — Default
+
+StateSmith always generates `partial class`, but the target is always `partial struct` for Unity ECS. The conversion is a required step in every workflow — not optional.
+
+### Why struct works
+
+C# instance methods on structs receive `this` by reference. The generated `DispatchEvent()`, `Start()`, and all state handlers that mutate `this.stateId` behave identically to the class version.
+
+### Step 1 — Write your partial as a struct from the start
+
+Always write `[Serializable] public partial struct` in your `.partial.cs`. Do not write `partial class` and convert later.
+
+```csharp
+[Serializable]
+public partial struct Counter { ... }
+```
+
+### Step 2 — Generate, then patch
+
+```bash
+# Generate the .cs (produces partial class)
+DOTNET_ROOT=/usr/lib/dotnet DOTNET_ROLL_FORWARD=LatestMajor ss.cli run -h
+
+# Patch it to partial struct
+ss-to-struct.sh Counter.cs
+```
+
+**What `ss-to-struct.sh` does:**
+1. `public partial class Name` → `public partial struct Name`
+2. Removes the parameterless constructor (structs have an implicit one)
+
+> **Note:** The script does **not** create a backup. Commit to version control before running it.
+
+### Step 3 — Implement `IComponentData`
+
+```csharp
+[Serializable]
+public partial struct Counter : IComponentData { ... }
+```
+
+---
 
 ## Workflow
 
 1. Design states and transitions in PlantUML
-2. Implement all methods in `.partial.cs`
-3. Run: `DOTNET_ROOT=/usr/lib/dotnet DOTNET_ROLL_FORWARD=LatestMajor ss.cli run -h` to generate the `.cs` from the `.puml`
-4. **Read the generated `.cs` file** before writing or fixing the partial class — it tells you the exact class name, enum names, and method signatures you must match
-5. Use generated class + partial class together
-
-## Struct Conversion (ECS/DOTS)
-
-StateSmith generates `partial class` but Unity ECS requires `partial struct` for `Data`. SO ALWAYS CONVERT. Use the included script:
+2. Write `.partial.cs` with `[Serializable] public partial struct` — always struct from the start
+3. Run `ss.cli run -h` to generate the `.cs` — **do this before finalising the partial**
+4. Read the generated `.cs` to confirm the exact struct name, `EventId` values, and method signatures
+5. Run `ss-to-struct.sh Generated.cs` to patch the generated file from `partial class` → `partial struct`
+6. Add `IComponentData` to the partial struct and compile
 
 ```bash
-# After ss.cli generates the .cs file:
-ss-to-struct.sh path/to/Generated.cs
+DOTNET_ROOT=/usr/lib/dotnet DOTNET_ROLL_FORWARD=LatestMajor ss.cli run -h
+ss-to-struct.sh MyName.cs
 ```
 
-**What it does:**
-1. `public partial class Name` → `public partial struct Name`
-2. Removes the parameterless constructor (structs have implicit one)
-3. Saves a `.bak` backup
-
-**You must ALSO change your `.partial.cs` file:**
-```csharp
-// Before:
-public partial class Adder { ... }
-
-// After:
-public partial struct Adder { ... }
-```
-
-**Structs work because:** Instance methods on structs receive `this` by reference in C#. The generated `DispatchEvent()`, `Start()`, and all `private void` handlers that mutate `this.stateId` work correctly — mutations are visible to the caller.
-
-**Workflow for ECS:**
-1. Create `.puml` + `.partial.cs` (using `partial struct`)
-2. Run `ss.cli run -h` to generate `.cs` (produces `partial class`)
-3. Run `ss-to-struct.sh Generated.cs` to convert to `partial struct`
-4. Implement `IComponentData` in your partial struct
-5. Compile and use as an ECS component
+---
 
 ## ⚠ Critical Pitfalls
 
-### 1. Run `ss.cli run -h` FIRST — It Generates Code, Not Help
-`ss.cli run -h` is NOT a help command. It reads your `.puml` and generates the `.cs` file. The `-h` flag means "here" (run in current context). Always run it before writing the partial class so you can see what was actually generated.
+### 1. `ss.cli run -h` generates code — it is not a help flag
+`-h` means "here" (run in current directory). It reads your `.puml` and writes the `.cs`. Run it first so you know what was actually generated before writing the partial class.
 
-### 2. Class Name Comes From `@startuml`
-The generated class name equals the `@startuml Name` identifier. **NOT** `NameSm` or `NameSm.partial.cs`.
-- `@startuml Adder` → generates class `Adder` in `Adder.cs`
-- The partial class file must be `Adder.partial.cs` with `public partial class Adder`
-- Do NOT invent a different name like `AdderSm`
+### 2. Struct name comes from `@startuml`, not the filename
+`@startuml Counter` → generates `Counter.cs` with `public partial class Counter` (patched to `struct` by the script).
+Your partial file must be `Counter.partial.cs` with `public partial struct Counter`.
+Do not invent a suffix like `CounterSm`.
 
-### 3. The Generated Code Already Defines EventId and DispatchEvent
-The auto-generated `.cs` file includes:
-- `public enum EventId { ADD = 0, COMPLETE = 1, ... }`
-- `public void DispatchEvent(EventId eventId)` with full state machine logic
+### 3. Never redefine generated members in the partial class
+The generated `.cs` already contains:
+- `public enum EventId { ... }`
+- `public void DispatchEvent(EventId eventId)`
 - `public StateId stateId`
 - `public void Start()`
 
-**Do NOT duplicate these in your partial class.** Your partial class only needs:
-- Fields/data
-- The action methods called from PlantUML transitions (e.g., `OnAdd()`, `OnComplete()`)
-- Helper methods
+Defining any of these again causes a compile error.
 
-### 4. Nested DispatchEvent During Transitions Is a No-Op
-Calling `DispatchEvent()` inside a transition action handler (e.g., calling `DispatchEvent(COMPLETE)` inside `OnAdd()`) does nothing — you're mid-transition and the state machine ignores nested dispatches. For auto-advancing chains, dispatch the next event externally or use a different pattern.
+### 4. Nested `DispatchEvent` during a transition is a no-op
+Calling `DispatchEvent()` inside an action method (which runs mid-transition) does nothing — the state machine ignores nested dispatches. Dispatch the next event externally after the current one completes.
 
-### 5. .NET Version Compatibility
-`ss.cli` targets .NET 9. If the system has .NET 10+, you must set:
+### 5. .NET version compatibility
+`ss.cli` targets .NET 9. If your system has .NET 10+, set the rollforward flag or you will get a "you must install .NET" error even though .NET is present:
+
 ```bash
 DOTNET_ROOT=/usr/lib/dotnet DOTNET_ROLL_FORWARD=LatestMajor ss.cli run -h
 ```
-Without `DOTNET_ROLL_FORWARD=LatestMajor`, it will fail with "you must install .NET" even though .NET is present.
