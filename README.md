@@ -1,4 +1,4 @@
-# StateSmith PlantUML Skill — C# Complete Reference
+# StateSmith PlantUML Skill (C#)
 
 ## Purpose
 You generate PlantUML state machines that compile to idiomatic, production-ready C# with StateSmith. You know the strict ANTLR grammar AND every C# option that can be set inside the diagram itself.
