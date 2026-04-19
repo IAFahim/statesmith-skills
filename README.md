@@ -83,7 +83,8 @@ using System;
 public partial struct MySm {
     // Fields and action methods ONLY.
     // EventId enum, DispatchEvent, Start, and stateId are already in the generated .cs.
-    private int _count;
+    // Fields must be public — ECS systems read and write them directly.
+    public int Count;
 
     public void OnStart() { ... }
     public void OnProcess() { ... }
@@ -131,26 +132,26 @@ using System;
 
 [Serializable]
 public partial struct Counter {
-    private int _count;
-    private int _limit;
+    public int Count;
+    public int Limit;
 
     public void OnStart() {
-        _count = 0;
-        _limit = 10;
+        Count = 0;
+        Limit = 10;
     }
 
     public void OnReset() {
-        _count = 0;
+        Count = 0;
     }
 
     public void OnDone() {
-        Console.WriteLine($"Reached limit: {_count}");
+        Console.WriteLine($"Reached limit: {Count}");
     }
 
     // Called from your game loop / system; dispatches LIMIT_REACHED when needed
     public void Increment() {
-        _count++;
-        if (_count >= _limit)
+        Count++;
+        if (Count >= Limit)
             DispatchEvent(EventId.LIMIT_REACHED);
     }
 }}
@@ -197,19 +198,19 @@ Failed --> Idle : RESET / OnReset();
 **Download.partial.cs**
 ```csharp
 namespace MyApp {
-using System; // for Serializable
+using System;
 
 [Serializable]
 public partial struct Download {
-    private string _url;
-    private byte[] _data;
+    public FixedString128Bytes Url;
+    public int BytesReceived;
 
-    public void OnStart()     { Console.WriteLine($"Connecting to {_url}"); }
-    public void OnConnected() { Console.WriteLine("Transferring..."); }
-    public void OnVerify()    { Console.WriteLine("Verifying checksum"); }
-    public void OnDone()      { Console.WriteLine("Download complete"); }
-    public void OnError()     { Console.WriteLine("Download failed"); }
-    public void OnReset()     { _data = null; }
+    public void OnStart()     { /* begin connection */ }
+    public void OnConnected() { /* begin transfer */ }
+    public void OnVerify()    { /* verify checksum */ }
+    public void OnDone()      { /* finalize */ }
+    public void OnError()     { BytesReceived = 0; }
+    public void OnReset()     { BytesReceived = 0; }
 }}
 ```
 
@@ -237,8 +238,8 @@ UsePartialClass = true
 state "check" as check <<choice>>
 
 Idle  --> check  : VALIDATE / RunCheck();
-check --> Valid   : [isValid]
-check --> Invalid : [!isValid]
+check --> Valid   : [IsValid]
+check --> Invalid : [!IsValid]
 
 Valid   --> Idle : RESET
 Invalid --> Idle : RESET / OnInvalidReset();
@@ -253,21 +254,20 @@ using System;
 
 [Serializable]
 public partial struct Validator {
-    private bool isValid;   // guard variable read directly by the state machine
-    private string _input;
+    public bool IsValid;        // guard variable read directly by the state machine
+    public FixedString64Bytes Input;
 
     public void RunCheck() {
-        isValid = !string.IsNullOrWhiteSpace(_input) && _input.Length >= 3;
+        IsValid = Input.Length >= 3;
     }
 
     public void OnInvalidReset() {
-        Console.WriteLine("Cleared invalid input");
-        _input = null;
+        Input = default;
     }
 }}
 ```
 
-> **Guard variable naming:** the variable name in the partial class must exactly match the identifier inside `[brackets]` in the PlantUML.
+> **Guard variable naming:** the field name in the partial struct must exactly match the identifier inside `[brackets]` in the PlantUML. Since fields are now public PascalCase, use `[IsValid]` in the diagram to match `public bool IsValid`.
 
 ---
 
